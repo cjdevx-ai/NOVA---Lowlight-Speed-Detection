@@ -4,7 +4,10 @@ from cv2.dnn import Model
 from ultralytics import YOLO
 import supervision as sv
 import numpy as np
+from collections import defaultdict, deque
 
+"""
+# LONG DIST
 SOURCE = np.array([
     [38, 56],
     [345, 9],
@@ -12,8 +15,30 @@ SOURCE = np.array([
     [370, 715]
 ], dtype=np.int32)
 
-TARGET_WIDTH = 25
-TARGET_HEIGHT = 250
+"""
+"""
+#SHORT DIST
+SOURCE = np.array([
+    [140, 230],
+    [661, 132],
+    [1207, 367],
+    [370, 715]
+], dtype=np.int32)
+"""
+
+
+#MIDDLE DIST
+SOURCE = np.array([
+    [128, 151],
+    [461, 90],
+    [1137, 397],
+    [370, 715]
+], dtype=np.int32)
+
+
+
+TARGET_WIDTH = 4
+TARGET_HEIGHT = 20
 
 TARGET = np.array(
     [
@@ -78,16 +103,32 @@ if __name__ == "__main__":
         resolution_wh=video_info.resolution_wh
     )
 
-    bounding_box_annotator = sv.BoxAnnotator(thickness=thickness)
+    bounding_box_annotator = sv.BoxAnnotator(
+        thickness=thickness,
+        color_lookup=sv.ColorLookup.TRACK
+    )
+
     label_annotator = sv.LabelAnnotator(
         text_scale=text_scale,
-        text_thickness=thickness
+        text_thickness=thickness,
+        text_position=sv.Position.BOTTOM_CENTER,
+        color_lookup=sv.ColorLookup.TRACK
     )
+
+    trace_annotator = sv.TraceAnnotator(
+        thickness=thickness,
+        trace_length=video_info.fps * 2,
+        position=sv.Position.BOTTOM_CENTER,
+        color_lookup=sv.ColorLookup.TRACK
+    )
+    
 
     frame_generator = sv.get_video_frames_generator(args.source_video_path)
 
     polygon_zone = sv.PolygonZone(SOURCE, video_info.resolution_wh)
     view_transformer = ViewTransformer(source=SOURCE, target=TARGET)
+
+    coordinates = defaultdict(lambda: deque(maxlen=video_info.fps))
 
     for frame in frame_generator:
         result = model(frame)[0]
@@ -103,12 +144,30 @@ if __name__ == "__main__":
             )
         points = view_transformer.transform_points(points=points).astype(int)
 
-        labels = [
+        for tracker_id, [_, y] in zip(detections.tracker_id, points):
+                coordinates[tracker_id].append(y)
+
+        # labels for speed
+        labels = []
+        for tracker_id in detections.tracker_id:
+                if len(coordinates[tracker_id]) < video_info.fps / 2:
+                    labels.append(f"#{tracker_id}")
+                else:
+                    coordinate_start = coordinates[tracker_id][-1]
+                    coordinate_end = coordinates[tracker_id][0]
+                    distance = abs(coordinate_start - coordinate_end)
+                    time = len(coordinates[tracker_id]) / video_info.fps
+                    speed = distance / time * 3.6
+                    labels.append(f"#{tracker_id} {int(speed)} km/h")
+
+        # labels for coordinates
+        """labels = [
             f"x:{x}, y:{y}"
             for [x,y]
             in points
-        ]
+        ]"""
 
+         # labels for tracker id
         """labels = [
             f"#{tracker_id}" 
             for tracker_id
@@ -117,6 +176,9 @@ if __name__ == "__main__":
 
         annotated_frame = frame.copy()
         sv.draw_polygon(annotated_frame, polygon=SOURCE, color=sv.Color.RED)
+        annotated_frame = trace_annotator.annotate(
+                scene=annotated_frame, detections=detections
+            )
         annotated_frame = bounding_box_annotator.annotate(
             scene=annotated_frame,
             detections=detections
@@ -126,7 +188,7 @@ if __name__ == "__main__":
             detections=detections, labels=labels
         )
 
-        speed = 2  # 1.5 = normal, 0.5 = half-speed (slower), 2.0 = double-speed (faster)
+        speed = 5  # 1.5 = normal, 0.5 = half-speed (slower), 2.0 = double-speed (faster)
         delay_ms = max(1, int((1000 / video_info.fps) / speed))
 
         cv2.imshow("annotated_frame", annotated_frame)
